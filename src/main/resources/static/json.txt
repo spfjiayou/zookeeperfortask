@@ -1,0 +1,3 @@
+{"cron":"0/6 * * * * ?","task_name":"mytaskThree","classpath":"com.sunpf.taskdatesourcetest.task.MytaskThree","current_thead":"N","isruning":"N","task_id":"mytaskthree","uUID":"111111","ex_method":"dotask","status":"1"}
+{"cron":"0/6 * * * * ?","task_name":"mytaskTwo","classpath":"com.sunpf.taskdatesourcetest.task.MytaskTwo","current_thead":"N","isruning":"N","task_id":"mytasktwo","uUID":"111111","ex_method":"dotask","status":"1"}
+{"cron":"0/6 * * * * ?","task_name":"mytaskOne","classpath":"com.sunpf.taskdatesourcetest.task.MytaskOne","current_thead":"N","isruning":"N","task_id":"mytaskone","uUID":"111111","ex_method":"dotask","status":"1"}
