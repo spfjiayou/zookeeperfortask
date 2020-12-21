@@ -6,9 +6,11 @@ import com.sunpf.zookeeperfortask.inter.pojo.TaskDatasource;
 import com.sunpf.zookeeperfortask.util.SpringUtils;
 import com.sunpf.zookeeperfortask.util.ZKClient;
 import org.apache.curator.framework.CuratorFramework;
+import org.apache.curator.framework.imps.CuratorFrameworkState;
 import org.apache.curator.framework.recipes.cache.PathChildrenCache;
 import org.apache.curator.framework.recipes.cache.PathChildrenCacheEvent;
 import org.apache.curator.framework.recipes.cache.PathChildrenCacheListener;
+import org.apache.tomcat.util.http.fileupload.impl.IOFileUploadException;
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.data.Stat;
 import org.slf4j.Logger;
@@ -38,6 +40,9 @@ public class TaskConfig {
 
     private final String localPath = "one";
 
+
+    private static boolean isConnectZK = false;
+
     //注入zookeeper信息
     @Autowired
     private ZKClient zkClient;
@@ -63,25 +68,42 @@ public class TaskConfig {
 
 
     public void startTask() throws Exception {
-        //获取对应的zookeeper中的数据信息
-        List<String> children = zkClient.getChildren(rootPath);
-        for (String str:children){
-            //获取对应的定时任务进行判断
-            try {
-                String data = new String(zkClient.getClient().getData().forPath(rootPath+ "/" + str));
-                //进行数据转换
-                TaskDatasource taskDatasource = JSON.parseObject(data, TaskDatasource.class);
-                //判断现有定时任务是否需要进行添加
-                if (checkTaskadd(taskDatasource)){
-                    //添加定时任务
-                    addTask(taskDatasource);
-                }
+        //判定zookeeper的连接状态如无法连接则取数据库定时任务进行定时任务启动调度
+        CuratorFrameworkState state = zkClient.getClient().getState();
+        if (state.equals(CuratorFrameworkState.STARTED)){
+            isConnectZK = true;
+            //使用zookeeper进行相应定时任务的加载
+            //获取对应的zookeeper中的数据信息
+            List<String> children = zkClient.getChildren(rootPath);
+            for (String str:children){
+                //获取对应的定时任务进行判断
+                try {
+                    String data = new String(zkClient.getClient().getData().forPath(rootPath+ "/" + str));
+                    //进行数据转换
+                    TaskDatasource taskDatasource = JSON.parseObject(data, TaskDatasource.class);
+                    //判断现有定时任务是否需要进行添加
+                    if (checkTaskadd(taskDatasource)){
+                        //添加定时任务
+                        addTask(taskDatasource,isConnectZK);
+                    }
 
-            } catch (Exception e) {
-                e.printStackTrace();
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
             }
+            addListener();
+        }else {
+            isConnectZK = false;
+            //使用数据进行相依的数据加载
+            List<TaskDatasource> taskDatasources = taskDatasourceMapper.selectTaskDatesource();
+            //添加定时任务
+            for (TaskDatasource taskDatasource : taskDatasources){
+                if (checkTaskadd(taskDatasource))
+                    addTask(taskDatasource,isConnectZK);
+            }
+
         }
-        addListener();
+
     }
     //判断定时任务调度
     private boolean checkTaskadd(TaskDatasource taskDatasource) {
@@ -130,30 +152,35 @@ public class TaskConfig {
 
 
     //删除定时任务
-    public void delTask(String taskName) throws Exception {
+    public void delTask(String taskName,boolean isConnectZK) throws Exception {
         ScheduledFuture scheduledFuture = scheduledFutureMap.get(taskName);
         if (scheduledFuture!=null){
             scheduledFuture.cancel(true);
             scheduledFutureMap.remove(taskName);
         }
-        //判断zookeeper下是否有其临时节点，如果有进行删除操作
-        Stat stat = zkClient.getClient().checkExists().forPath(rootPath + "/" + taskName +"/"+localPath);
-        if (stat != null)
-            zkClient.getClient().delete().forPath(rootPath + "/" + taskName + "/" + localPath);
+        if (isConnectZK){
+            //判断zookeeper下是否有其临时节点，如果有进行删除操作
+            Stat stat = zkClient.getClient().checkExists().forPath(rootPath + "/" + taskName +"/"+localPath);
+            if (stat != null)
+                zkClient.getClient().delete().forPath(rootPath + "/" + taskName + "/" + localPath);
+        }
 
     }
 
     //添加定时任务
-    public void addTask(TaskDatasource taskDatasource) throws Exception {
+    public void addTask(TaskDatasource taskDatasource,boolean isconnectCK) throws Exception {
         ScheduledFuture<?> schedule = threadPoolTaskScheduler.schedule(getRunnable(taskDatasource), getTrigger(taskDatasource));
         scheduledFutureMap.put(taskDatasource.getTask_name(),schedule);
-        //对其临时节点进行
-        Stat stat = zkClient.getClient().checkExists().forPath(rootPath + "/" + taskDatasource.getTask_name() + "/" + localPath);
-        if (stat==null){
-            zkClient.getClient().create().creatingParentsIfNeeded().withMode(CreateMode.EPHEMERAL).forPath(rootPath+"/"+taskDatasource.getTask_name()+"/"+localPath,taskDatasource.getCron().getBytes());
-        }else {
-            zkClient.getClient().setData().forPath(rootPath+"/"+taskDatasource.getTask_name()+"/"+localPath,taskDatasource.getCron().getBytes());
+        if (isconnectCK){
+            //对其临时节点进行
+            Stat stat = zkClient.getClient().checkExists().forPath(rootPath + "/" + taskDatasource.getTask_name() + "/" + localPath);
+            if (stat==null){
+                zkClient.getClient().create().creatingParentsIfNeeded().withMode(CreateMode.EPHEMERAL).forPath(rootPath+"/"+taskDatasource.getTask_name()+"/"+localPath,taskDatasource.getCron().getBytes());
+            }else {
+                zkClient.getClient().setData().forPath(rootPath+"/"+taskDatasource.getTask_name()+"/"+localPath,taskDatasource.getCron().getBytes());
+            }
         }
+
     }
 
 
@@ -174,23 +201,23 @@ public class TaskConfig {
                     String jsondata = new String(pathChildrenCacheEvent.getData().getData());
                     TaskDatasource taskDatasource = JSON.parseObject(jsondata, TaskDatasource.class);
                     if (checkTaskadd(taskDatasource))
-                        addTask(taskDatasource);
+                        addTask(taskDatasource,isConnectZK);
                 }else if (pathChildrenCacheEvent.getType().equals(PathChildrenCacheEvent.Type.CHILD_UPDATED)){
                     //修改节点
                     logger.info("节点信息修改:"+pathChildrenCacheEvent.getData().getPath()+"data:"+pathChildrenCacheEvent.getData().getData());
                     String jsondata = new String(pathChildrenCacheEvent.getData().getData());
                     TaskDatasource taskDatasource = JSON.parseObject(jsondata, TaskDatasource.class);
                     //先删除在进行添加操作
-                    delTask(taskDatasource.getTask_name());
+                    delTask(taskDatasource.getTask_name(),isConnectZK);
                     if (checkTaskadd(taskDatasource))
-                        addTask(taskDatasource);
+                        addTask(taskDatasource,isConnectZK);
                 }else if (pathChildrenCacheEvent.getType().equals(PathChildrenCacheEvent.Type.CHILD_REMOVED)){
                     //删除节点
                     logger.info("节点删除:"+pathChildrenCacheEvent.getData().getPath());
                     //获取对应的节点进行相应的操作
                     String path = pathChildrenCacheEvent.getData().getPath();
                     String[] task_name = path.split("/");
-                    delTask(task_name[task_name.length-1]);
+                    delTask(task_name[task_name.length-1],isConnectZK);
                 }
             }
         });
